@@ -164,16 +164,16 @@ static error_code select_and_delete(ppu_thread& ppu)
 
 	while (true)
 	{
-		// Yield
+		// Yield before a blocking dialog is being spawned
 		lv2_obj::sleep(ppu);
 
-		// Display Save Data List asynchronously in the GUI thread.
+		// Display a blocking Save Data List asynchronously in the GUI thread.
 		if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 		{
 			selected = save_dialog->ShowSaveDataList(save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null);
 		}
 
-		// Reschedule
+		// Reschedule after a blocking dialog returns
 		if (ppu.check_state())
 		{
 			return 0;
@@ -192,9 +192,20 @@ static error_code select_and_delete(ppu_thread& ppu)
 		SaveDataEntry entry    = save_entries[selected];
 		const std::string info = entry.title + "\n" + entry.subtitle + "\n" + entry.details;
 
-		// Get user confirmation
+		// Reusable display message string
 		std::string msg = "Do you really want to delete this entry?\n\n" + info;
+
+		// Yield before a blocking dialog is being spawned
+		lv2_obj::sleep(ppu);
+
+		// Get user confirmation by opening a blocking dialog
 		error_code res  = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(msg));
+
+		// Reschedule after a blocking dialog returns
+		if (ppu.check_state())
+		{
+			return 0;
+		}
 
 		if (res != CELL_OK)
 		{
@@ -217,14 +228,90 @@ static error_code select_and_delete(ppu_thread& ppu)
 				focused = -1;
 			}
 
-			// Display success message (return value should be irrelevant here)
+			// Update display message
 			msg = "Successfully removed entry!\n\n" + info;
 			cellSaveData.success("%s", msg);
+
+			// Yield before blocking dialog is being spawned
+			lv2_obj::sleep(ppu);
+
+			// Display success message by opening a blocking dialog (return value should be irrelevant here)
 			res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, vm::make_str(msg));
+
+			// Reschedule after blocking dialog returns
+			if (ppu.check_state())
+			{
+				return 0;
+			}
 		}
 	}
 
 	return CELL_CANCEL;
+}
+
+// Displays a CellSaveDataCBResult error message.
+static error_code display_callback_result_error_message(ppu_thread& ppu, vm::ptr<CellSaveDataCBResult> result, u32 errDialog)
+{
+	// TODO: errDialog == CELL_SAVEDATA_ERRDIALOG_NOREPEAT
+	if (!result || errDialog != CELL_SAVEDATA_ERRDIALOG_ALWAYS)
+		return CELL_SAVEDATA_ERROR_CBRESULT;
+
+	std::string msg;
+	bool use_invalid_message = false;
+
+	switch (result->result)
+	{
+	case CELL_SAVEDATA_CBRESULT_ERR_NOSPACE:
+		msg = fmt::format("Error - Insufficient free space\n\nSpace needed: %d KB", result->errNeedSizeKB);
+		break;
+	case CELL_SAVEDATA_CBRESULT_ERR_FAILURE:
+		msg = "Error - Failed to save or load";
+		break;
+	case CELL_SAVEDATA_CBRESULT_ERR_BROKEN:
+		msg = "Error - Save data corrupted";
+		break;
+	case CELL_SAVEDATA_CBRESULT_ERR_NODATA:
+		msg = "Error - Save data cannot be found";
+		break;
+	case CELL_SAVEDATA_CBRESULT_ERR_INVALID:
+		if (result->invalidMsg)
+			use_invalid_message = true;
+		break;
+	default:
+		return CELL_SAVEDATA_ERROR_CBRESULT;
+	}
+
+	// Yield before a blocking dialog is being spawned
+	lv2_obj::sleep(ppu);
+
+	// Get user confirmation by opening a blocking dialog (return value should be irrelevant here)
+	error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, use_invalid_message ? result->invalidMsg : vm::make_str(msg));
+
+	// Reschedule after a blocking dialog returns
+	if (ppu.check_state())
+	{
+		return 0;
+	}
+
+	return CELL_SAVEDATA_ERROR_CBRESULT;
+}
+
+static std::string get_confirmation_message(u32 operation)
+{
+	if (operation == SAVEDATA_OP_LIST_DELETE || operation == SAVEDATA_OP_FIXED_DELETE)
+	{
+		return "Delete this entry?";
+	}
+	else if (operation == SAVEDATA_OP_LIST_LOAD || operation == SAVEDATA_OP_FIXED_LOAD)
+	{
+		return "Load this entry?";
+	}
+	else if (operation == SAVEDATA_OP_LIST_SAVE || operation == SAVEDATA_OP_FIXED_SAVE)
+	{
+		return "Overwrite this entry?";
+	}
+
+	return "";
 }
 
 static s32 savedata_check_args(u32 operation, u32 version, vm::cptr<char> dirName,
@@ -598,9 +685,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < 0)
 			{
-				//TODO: display dialog
 				cellSaveData.warning("savedata_op(): funcList returned result=%d.", result->result);
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+
+				return display_callback_result_error_message(ppu, result, errDialog);
 			}
 
 			// if the callback has returned ok, lets return OK.
@@ -740,10 +827,10 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 		while (funcList)
 		{
-			// Yield
+			// Yield before a blocking dialog is being spawned
 			lv2_obj::sleep(ppu);
 
-			// Display Save Data List asynchronously in the GUI thread.
+			// Display a blocking Save Data List asynchronously in the GUI thread.
 			if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 			{
 				selected = save_dialog->ShowSaveDataList(save_entries, focused, operation, listSet);
@@ -753,23 +840,54 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				selected = -2;
 			}
 
-			// Reschedule
+			// Reschedule after a blocking dialog returns
 			if (ppu.check_state())
 			{
 				return 0;
-			}
-
-			// UI returns -1 for new save games
-			if (selected == -1)
-			{
-				save_entry.dirName = listSet->newData->dirName.get_ptr();
-				save_entry.escaped = vfs::escape(save_entry.dirName);
 			}
 
 			// Cancel selected in UI
 			if (selected == -2)
 			{
 				return CELL_CANCEL;
+			}
+
+			std::string message;
+
+			// UI returns -1 for new save games
+			if (selected == -1)
+			{
+				message = "Create new Save Data?";
+				save_entry.dirName = listSet->newData->dirName.get_ptr();
+				save_entry.escaped = vfs::escape(save_entry.dirName);
+			}
+			else
+			{
+				// Get information from the selected entry
+				SaveDataEntry entry = save_entries[selected];
+				message = get_confirmation_message(operation) + "\n\n" + entry.title + "\n" + entry.subtitle + "\n" + entry.details;
+			}
+
+			// Yield before a blocking dialog is being spawned
+			lv2_obj::sleep(ppu);
+
+			// Get user confirmation by opening a blocking dialog
+			error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(message));
+
+			// Reschedule after a blocking dialog returns
+			if (ppu.check_state())
+			{
+				return 0;
+			}
+
+			if (res != CELL_OK)
+			{
+				return CELL_SAVEDATA_ERROR_INTERNAL;
+			}
+
+			if (g_last_user_response != CELL_MSGDIALOG_BUTTON_YES)
+			{
+				continue;
 			}
 
 			if (operation == SAVEDATA_OP_LIST_DELETE)
@@ -779,7 +897,8 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				if (result->result < 0)
 				{
 					cellSaveData.warning("savedata_op(): funcDone returned result=%d.", result->result);
-					return CELL_SAVEDATA_ERROR_CBRESULT;
+
+					return display_callback_result_error_message(ppu, result, errDialog);
 				}
 
 				if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
@@ -819,13 +938,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < 0)
 			{
-				//TODO: Show msgDialog if required
-				// depends on fixedSet->option
-				// 0 = none
-				// 1 = skip confirmation dialog
-
 				cellSaveData.warning("savedata_op(): funcFixed returned result=%d.", result->result);
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+
+				return display_callback_result_error_message(ppu, result, errDialog);
 			}
 
 			if (!fixedSet->dirName)
@@ -843,6 +958,45 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				}
 			}
 
+			if (fixedSet->option != CELL_SAVEDATA_OPTION_NOCONFIRM &&
+				(operation == SAVEDATA_OP_FIXED_SAVE || operation == SAVEDATA_OP_FIXED_LOAD || operation == SAVEDATA_OP_FIXED_DELETE))
+			{
+				std::string message;
+
+				if (selected == -1)
+				{
+					message = "Create new Save Data?";
+				}
+				else
+				{
+					// Get information from the selected entry
+					SaveDataEntry entry = save_entries[selected];
+					message = get_confirmation_message(operation) + "\n\n" + entry.title + "\n" + entry.subtitle + "\n" + entry.details;
+				}
+
+				// Yield before a blocking dialog is being spawned
+				lv2_obj::sleep(ppu);
+
+				// Get user confirmation by opening a blocking dialog
+				error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(message));
+
+				// Reschedule after a blocking dialog returns
+				if (ppu.check_state())
+				{
+					return 0;
+				}
+
+				if (res != CELL_OK)
+				{
+					return CELL_SAVEDATA_ERROR_INTERNAL;
+				}
+
+				if (g_last_user_response != CELL_MSGDIALOG_BUTTON_YES)
+				{
+					return CELL_CANCEL;
+				}
+			}
+
 			if (selected == -1)
 			{
 				save_entry.dirName = fixedSet->dirName.get_ptr();
@@ -856,7 +1010,8 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				if (result->result < 0)
 				{
 					cellSaveData.warning("savedata_op(): funcDone_ returned result=%d.", result->result);
-					return CELL_SAVEDATA_ERROR_CBRESULT;
+
+					return display_callback_result_error_message(ppu, result, errDialog);
 				}
 
 				return CELL_OK;
@@ -1035,7 +1190,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < CELL_SAVEDATA_CBRESULT_OK_NEXT)
 			{
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+				return display_callback_result_error_message(ppu, result, errDialog);
 			}
 
 			// Skip and return without error
@@ -1218,31 +1373,26 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			break;
 		}
-
 		case CELL_SAVEDATA_FILETYPE_CONTENT_ICON0:
 		{
 			file_path = "ICON0.PNG";
 			break;
 		}
-
 		case CELL_SAVEDATA_FILETYPE_CONTENT_ICON1:
 		{
 			file_path = "ICON1.PAM";
 			break;
 		}
-
 		case CELL_SAVEDATA_FILETYPE_CONTENT_PIC1:
 		{
 			file_path = "PIC1.PNG";
 			break;
 		}
-
 		case CELL_SAVEDATA_FILETYPE_CONTENT_SND0:
 		{
 			file_path = "SND0.AT3";
 			break;
 		}
-
 		default:
 		{
 			// ****** sysutil savedata parameter error : 61 ******
@@ -1439,6 +1589,11 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		fs::remove_all(old_path);
 	}
 
+	if (savedata_result == CELL_SAVEDATA_ERROR_CBRESULT)
+	{
+		return display_callback_result_error_message(ppu, result, errDialog);
+	}
+
 	return savedata_result;
 }
 
@@ -1510,7 +1665,7 @@ error_code cellSaveDataListSave2(ppu_thread& ppu, u32 version, PSetList setList,
 	cellSaveData.warning("cellSaveDataListSave2(version=%d, setList=*0x%x, setBuf=*0x%x, funcList=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x, userdata=*0x%x)",
 		version, setList, setBuf, funcList, funcStat, funcFile, container, userdata);
 
-	return savedata_op(ppu, SAVEDATA_OP_LIST_SAVE, version, vm::null, 1, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, userdata, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_LIST_SAVE, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, userdata, 0, vm::null);
 }
 
 error_code cellSaveDataListLoad2(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncList funcList,
@@ -1519,7 +1674,7 @@ error_code cellSaveDataListLoad2(ppu_thread& ppu, u32 version, PSetList setList,
 	cellSaveData.warning("cellSaveDataListLoad2(version=%d, setList=*0x%x, setBuf=*0x%x, funcList=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x, userdata=*0x%x)",
 		version, setList, setBuf, funcList, funcStat, funcFile, container, userdata);
 
-	return savedata_op(ppu, SAVEDATA_OP_LIST_LOAD, version, vm::null, 1, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, userdata, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_LIST_LOAD, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, userdata, 0, vm::null);
 }
 
 error_code cellSaveDataListSave(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncList funcList,
@@ -1528,7 +1683,7 @@ error_code cellSaveDataListSave(ppu_thread& ppu, u32 version, PSetList setList, 
 	cellSaveData.warning("cellSaveDataListSave(version=%d, setList=*0x%x, setBuf=*0x%x, funcList=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x)",
 		version, setList, setBuf, funcList, funcStat, funcFile, container);
 
-	return savedata_op(ppu, SAVEDATA_OP_LIST_SAVE, version, vm::null, 1, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_LIST_SAVE, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
 }
 
 error_code cellSaveDataListLoad(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncList funcList,
@@ -1537,7 +1692,7 @@ error_code cellSaveDataListLoad(ppu_thread& ppu, u32 version, PSetList setList, 
 	cellSaveData.warning("cellSaveDataListLoad(version=%d, setList=*0x%x, setBuf=*0x%x, funcList=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x)",
 		version, setList, setBuf, funcList, funcStat, funcFile, container);
 
-	return savedata_op(ppu, SAVEDATA_OP_LIST_LOAD, version, vm::null, 1, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_LIST_LOAD, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, funcList, vm::null, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
 }
 
 error_code cellSaveDataFixedSave2(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncFixed funcFixed,
@@ -1546,7 +1701,7 @@ error_code cellSaveDataFixedSave2(ppu_thread& ppu, u32 version, PSetList setList
 	cellSaveData.warning("cellSaveDataFixedSave2(version=%d, setList=*0x%x, setBuf=*0x%x, funcFixed=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x, userdata=*0x%x)",
 		version, setList, setBuf, funcFixed, funcStat, funcFile, container, userdata);
 
-	return savedata_op(ppu, SAVEDATA_OP_FIXED_SAVE, version, vm::null, 1, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, userdata, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_FIXED_SAVE, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, userdata, 0, vm::null);
 }
 
 error_code cellSaveDataFixedLoad2(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncFixed funcFixed,
@@ -1555,7 +1710,7 @@ error_code cellSaveDataFixedLoad2(ppu_thread& ppu, u32 version, PSetList setList
 	cellSaveData.warning("cellSaveDataFixedLoad2(version=%d, setList=*0x%x, setBuf=*0x%x, funcFixed=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x, userdata=*0x%x)",
 		version, setList, setBuf, funcFixed, funcStat, funcFile, container, userdata);
 
-	return savedata_op(ppu, SAVEDATA_OP_FIXED_LOAD, version, vm::null, 1, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, userdata, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_FIXED_LOAD, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, userdata, 0, vm::null);
 }
 
 error_code cellSaveDataFixedSave(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncFixed funcFixed,
@@ -1564,7 +1719,7 @@ error_code cellSaveDataFixedSave(ppu_thread& ppu, u32 version, PSetList setList,
 	cellSaveData.warning("cellSaveDataFixedSave(version=%d, setList=*0x%x, setBuf=*0x%x, funcFixed=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x)",
 		version, setList, setBuf, funcFixed, funcStat, funcFile, container);
 
-	return savedata_op(ppu, SAVEDATA_OP_FIXED_SAVE, version, vm::null, 1, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_FIXED_SAVE, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
 }
 
 error_code cellSaveDataFixedLoad(ppu_thread& ppu, u32 version, PSetList setList, PSetBuf setBuf, PFuncFixed funcFixed,
@@ -1573,7 +1728,7 @@ error_code cellSaveDataFixedLoad(ppu_thread& ppu, u32 version, PSetList setList,
 	cellSaveData.warning("cellSaveDataFixedLoad(version=%d, setList=*0x%x, setBuf=*0x%x, funcFixed=*0x%x, funcStat=*0x%x, funcFile=*0x%x, container=0x%x)",
 		version, setList, setBuf, funcFixed, funcStat, funcFile, container);
 
-	return savedata_op(ppu, SAVEDATA_OP_FIXED_LOAD, version, vm::null, 1, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
+	return savedata_op(ppu, SAVEDATA_OP_FIXED_LOAD, version, vm::null, CELL_SAVEDATA_ERRDIALOG_ALWAYS, setList, setBuf, vm::null, funcFixed, funcStat, funcFile, container, 2, vm::null, 0, vm::null);
 }
 
 error_code cellSaveDataAutoSave2(ppu_thread& ppu, u32 version, vm::cptr<char> dirName, u32 errDialog, PSetBuf setBuf,

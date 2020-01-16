@@ -355,11 +355,11 @@ target_sources(rpcs3_emu PRIVATE
 	RSX/Common/BufferUtils.cpp
 	RSX/Common/FragmentProgramDecompiler.cpp
 	RSX/Common/ProgramStateCache.cpp
-	RSX/Common/ShaderParam.cpp
 	RSX/Common/surface_store.cpp
 	RSX/Common/TextureUtils.cpp
 	RSX/Common/VertexProgramDecompiler.cpp
 	RSX/Null/NullGSRender.cpp
+	RSX/Overlays/overlay_animation.cpp
 	RSX/Overlays/overlay_edit_text.cpp
 	RSX/Overlays/overlay_font.cpp
 	RSX/Overlays/overlay_list_view.cpp
@@ -371,6 +371,8 @@ target_sources(rpcs3_emu PRIVATE
 	RSX/Overlays/overlays.cpp
 	RSX/Overlays/overlay_shader_compile_notification.cpp
 	RSX/Overlays/overlay_trophy_notification.cpp
+	RSX/Overlays/Shaders/shader_loading_dialog.cpp
+	RSX/Overlays/Shaders/shader_loading_dialog_native.cpp
 	RSX/Capture/rsx_capture.cpp
 	RSX/Capture/rsx_replay.cpp
 	RSX/GL/GLCommonDecompiler.cpp
@@ -386,6 +388,7 @@ target_sources(rpcs3_emu PRIVATE
 
 if(TARGET 3rdparty_vulkan)
 	target_sources(rpcs3_emu PRIVATE
+		RSX/VK/VKCommandStream.cpp
 		RSX/VK/VKCommonDecompiler.cpp
 		RSX/VK/VKDMA.cpp
 		RSX/VK/VKFormats.cpp
@@ -401,7 +404,6 @@ if(TARGET 3rdparty_vulkan)
 		RSX/VK/VKTexture.cpp
 		RSX/VK/VKVertexBuffers.cpp
 		RSX/VK/VKVertexProgram.cpp
-		RSX/VK/VulkanAPI.cpp
 	)
 endif()
 

@@ -13,15 +13,15 @@
 
 #include "Emu/Io/Null/NullPadHandler.h"
 
-#include "keyboard_pad_handler.h"
-#include "ds3_pad_handler.h"
-#include "ds4_pad_handler.h"
+#include "Input/keyboard_pad_handler.h"
+#include "Input/ds3_pad_handler.h"
+#include "Input/ds4_pad_handler.h"
 #ifdef _WIN32
-#include "xinput_pad_handler.h"
-#include "mm_joystick_handler.h"
+#include "Input/xinput_pad_handler.h"
+#include "Input/mm_joystick_handler.h"
 #endif
 #ifdef HAVE_LIBEVDEV
-#include "evdev_joystick_handler.h"
+#include "Input/evdev_joystick_handler.h"
 #endif
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
@@ -689,6 +689,62 @@ void pad_settings_dialog::mouseReleaseEvent(QMouseEvent* event)
 		m_cfg_entries[m_button_id].text = qstr(m_cfg_entries[m_button_id].key);
 	}
 
+	ReactivateButtons();
+}
+
+void pad_settings_dialog::wheelEvent(QWheelEvent *event)
+{
+	if (m_handler->m_type != pad_handler::keyboard)
+	{
+		return;
+	}
+
+	if (m_button_id == button_ids::id_pad_begin)
+	{
+		return;
+	}
+
+	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
+	{
+		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		return;
+	}
+
+	QPoint direction = event->angleDelta();
+	if (direction.isNull())
+	{
+		// Scrolling started/ended event, no direction given
+		return;
+	}
+
+	u32 key;
+	if (const int x = direction.x())
+	{
+		bool to_left = event->inverted() ? x < 0 : x > 0;
+		if (to_left)
+		{
+			key = mouse::wheel_left;
+		}
+		else
+		{
+			key = mouse::wheel_right;
+		}
+	}
+	else
+	{
+		const int y = direction.y();
+		bool to_up = event->inverted() ? y < 0 : y > 0;
+		if (to_up)
+		{
+			key = mouse::wheel_up;
+		}
+		else
+		{
+			key = mouse::wheel_down;
+		}
+	}
+	m_cfg_entries[m_button_id].key = (static_cast<keyboard_pad_handler*>(m_handler.get()))->GetMouseName(key);
+	m_cfg_entries[m_button_id].text = qstr(m_cfg_entries[m_button_id].key);
 	ReactivateButtons();
 }
 

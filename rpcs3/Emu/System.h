@@ -152,7 +152,6 @@ enum class video_resolution
 
 enum class video_aspect
 {
-	_auto,
 	_4_3,
 	_16_9,
 };
@@ -497,12 +496,14 @@ struct cfg_root : cfg::node
 		cfg::_bool strict_texture_flushing{this, "Strict Texture Flushing", false};
 		cfg::_bool disable_native_float16{this, "Disable native float16 support", false};
 		cfg::_bool multithreaded_rsx{this, "Multithreaded RSX", false};
+		cfg::_bool relaxed_zcull_sync{this, "Relaxed ZCULL Sync", false};
 		cfg::_int<1, 8> consequtive_frames_to_draw{this, "Consecutive Frames To Draw", 1};
 		cfg::_int<1, 8> consequtive_frames_to_skip{this, "Consecutive Frames To Skip", 1};
 		cfg::_int<50, 800> resolution_scale_percent{this, "Resolution Scale", 100};
 		cfg::_int<0, 16> anisotropic_level_override{this, "Anisotropic Filter Override", 0};
 		cfg::_int<1, 1024> min_scalable_dimension{this, "Minimum Scalable Dimension", 16};
-		cfg::_int<0, 30000000> driver_recovery_timeout{this, "Driver Recovery Timeout", 1000000};
+		cfg::_int<0, 30000000> driver_recovery_timeout{this, "Driver Recovery Timeout", 1000000, true};
+		cfg::_int<0, 16667> driver_wakeup_delay{this, "Driver Wake-Up Delay", 1, true};
 		cfg::_int<1, 500> vblank_rate{this, "Vblank Rate", 60}; // Changing this from 60 may affect game speed in unexpected ways
 
 		struct node_vk : cfg::node

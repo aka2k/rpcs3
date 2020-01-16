@@ -83,6 +83,8 @@ public:
 		DisableAsyncShaderCompiler,
 		MultithreadedRSX,
 		VBlankRate,
+		RelaxedZCULL,
+		DriverWakeUpDelay,
 
 		// Performance Overlay
 		PerfOverlayEnabled,
@@ -162,11 +164,12 @@ public:
 		SettingsType type = VulkanAdapter;
 		bool supported = true;
 		bool has_adapters = true;
+		bool has_msaa = false;
 
-		Render_Info() {}
-		Render_Info(const QString& name) : name(name), has_adapters(false) {}
-		Render_Info(const QString& name, const QStringList& adapters, bool supported, SettingsType type)
-			: name(name), adapters(adapters), supported(supported), type(type) {}
+		Render_Info() = default;
+		explicit Render_Info(QString name) : name(std::move(name)), has_adapters(false) {}
+		Render_Info(QString name, QStringList adapters, bool supported, SettingsType type, bool has_msaa)
+			: name(std::move(name)), adapters(std::move(adapters)), supported(supported), type(type), has_msaa(has_msaa) {}
 	};
 
 	struct Render_Creator
@@ -307,11 +310,13 @@ private:
 		{ DisableVulkanMemAllocator,  { "Video", "Disable Vulkan Memory Allocator"}},
 		{ DisableAsyncShaderCompiler, { "Video", "Disable Asynchronous Shader Compiler"}},
 		{ MultithreadedRSX,           { "Video", "Multithreaded RSX"}},
+		{ RelaxedZCULL,               { "Video", "Relaxed ZCULL Sync"}},
 		{ AnisotropicFilterOverride,  { "Video", "Anisotropic Filter Override"}},
 		{ ResolutionScale,            { "Video", "Resolution Scale"}},
 		{ MinimumScalableDimension,   { "Video", "Minimum Scalable Dimension"}},
 		{ VulkanAdapter,              { "Video", "Vulkan", "Adapter"}},
 		{ VBlankRate,                 { "Video", "Vblank Rate"}},
+		{ DriverWakeUpDelay,          { "Video", "Driver Wake-Up Delay"}},
 
 		// Performance Overlay
 		{ PerfOverlayEnabled,               { "Video", "Performance Overlay", "Enabled" } },

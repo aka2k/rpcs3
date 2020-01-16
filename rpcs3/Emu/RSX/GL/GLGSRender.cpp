@@ -4,6 +4,7 @@
 #include "GLGSRender.h"
 #include "GLCompute.h"
 #include "GLVertexProgram.h"
+#include "../Overlays/Shaders/shader_loading_dialog_native.h"
 #include "../rsx_methods.h"
 #include "../Common/BufferUtils.h"
 #include "../rsx_utils.h"
@@ -176,8 +177,7 @@ void GLGSRender::begin()
 {
 	rsx::thread::begin();
 
-	if (skip_current_frame ||
-		(conditional_render_enabled && conditional_render_test_failed))
+	if (skip_current_frame || cond_render_ctrl.disable_rendering())
 		return;
 
 	init_buffers(rsx::framebuffer_creation_context::context_draw);
@@ -187,8 +187,7 @@ void GLGSRender::end()
 {
 	m_profiler.start();
 
-	if (skip_current_frame || !framebuffer_status_valid ||
-		(conditional_render_enabled && conditional_render_test_failed))
+	if (skip_current_frame || !framebuffer_status_valid || cond_render_ctrl.disable_rendering())
 	{
 		execute_nop_draw();
 		rsx::thread::end();
@@ -913,62 +912,9 @@ void GLGSRender::on_init_thread()
 	}
 	else
 	{
-		struct native_helper : gl::shader_cache::progress_dialog_helper
-		{
-			rsx::thread *owner = nullptr;
-			std::shared_ptr<rsx::overlays::message_dialog> dlg;
+		rsx::shader_loading_dialog_native dlg(this);
 
-			native_helper(GLGSRender *ptr) :
-				owner(ptr) {}
-
-			void create() override
-			{
-				MsgDialogType type = {};
-				type.disable_cancel = true;
-				type.progress_bar_count = 2;
-
-				dlg = g_fxo->get<rsx::overlays::display_manager>()->create<rsx::overlays::message_dialog>(!!g_cfg.video.shader_preloading_dialog.use_custom_background);
-				dlg->progress_bar_set_taskbar_index(-1);
-				dlg->show("Loading precompiled shaders from disk...", type, [](s32 status)
-				{
-					if (status != CELL_OK)
-						Emu.Stop();
-				});
-			}
-
-			void update_msg(u32 index, u32 processed, u32 entry_count) override
-			{
-				const char *text = index == 0 ? "Loading pipeline object %u of %u" : "Compiling pipeline object %u of %u";
-				dlg->progress_bar_set_message(index, fmt::format(text, processed, entry_count));
-				owner->flip({});
-			}
-
-			void inc_value(u32 index, u32 value) override
-			{
-				dlg->progress_bar_increment(index, static_cast<f32>(value));
-				owner->flip({});
-			}
-
-			void set_limit(u32 index, u32 limit) override
-			{
-				dlg->progress_bar_set_limit(index, limit);
-				owner->flip({});
-			}
-
-			void refresh() override
-			{
-				dlg->refresh();
-			}
-
-			void close() override
-			{
-				dlg->return_code = CELL_OK;
-				dlg->close();
-			}
-		}
-		helper(this);
-
-		m_shaders_cache->load(&helper);
+		m_shaders_cache->load(&dlg);
 	}
 }
 
@@ -1100,13 +1046,21 @@ void GLGSRender::on_exit()
 
 void GLGSRender::clear_surface(u32 arg)
 {
-	if (skip_current_frame || !framebuffer_status_valid) return;
+	if (skip_current_frame) return;
 
 	// If stencil write mask is disabled, remove clear_stencil bit
 	if (!rsx::method_registers.stencil_mask()) arg &= ~0x2u;
 
 	// Ignore invalid clear flags
 	if ((arg & 0xf3) == 0) return;
+
+	u8 ctx = rsx::framebuffer_creation_context::context_draw;
+	if (arg & 0xF0) ctx |= rsx::framebuffer_creation_context::context_clear_color;
+	if (arg & 0x3) ctx |= rsx::framebuffer_creation_context::context_clear_depth;
+
+	init_buffers(static_cast<rsx::framebuffer_creation_context>(ctx), true);
+
+	if (!framebuffer_status_valid) return;
 
 	GLbitfield mask = 0;
 
@@ -1221,46 +1175,6 @@ void GLGSRender::clear_surface(u32 arg)
 	}
 
 	glClear(mask);
-}
-
-bool GLGSRender::do_method(u32 cmd, u32 arg)
-{
-	switch (cmd)
-	{
-	case NV4097_CLEAR_SURFACE:
-	{
-		if (arg & 0xF3)
-		{
-			//Only do all this if we have actual work to do
-			u8 ctx = rsx::framebuffer_creation_context::context_draw;
-			if (arg & 0xF0) ctx |= rsx::framebuffer_creation_context::context_clear_color;
-			if (arg & 0x3) ctx |= rsx::framebuffer_creation_context::context_clear_depth;
-
-			init_buffers(rsx::framebuffer_creation_context{ctx}, true);
-			clear_surface(arg);
-		}
-
-		return true;
-	}
-	case NV4097_CLEAR_ZCULL_SURFACE:
-	{
-		// NOP
-		// Clearing zcull memory does not modify depth/stencil buffers 'bound' to the zcull region
-		return true;
-	}
-	case NV4097_TEXTURE_READ_SEMAPHORE_RELEASE:
-	{
-		// Texture barrier, seemingly not very useful
-		return true;
-	}
-	case NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE:
-	{
-		//flush_draw_buffers = true;
-		return true;
-	}
-	}
-
-	return false;
 }
 
 bool GLGSRender::load_program()

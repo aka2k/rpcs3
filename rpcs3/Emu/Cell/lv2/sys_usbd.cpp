@@ -183,6 +183,12 @@ usb_handler_thread::usb_handler_thread()
 		check_device(0x044F, 0xB65D, 0xB65D, "Thrustmaster FFB");
 		check_device(0x044F, 0xB65E, 0xB65E, "Thrustmaster TRS");
 		check_device(0x044F, 0xB660, 0xB660, "Thrustmaster T500 RS Gear Shift");
+
+		// Buzz controllers
+		check_device(0x054C, 0x1000, 0x1040, "buzzer0");
+		check_device(0x054C, 0x0001, 0x0041, "buzzer1");
+		check_device(0x054C, 0x0042, 0x0042, "buzzer2");
+		check_device(0x046D, 0xC220, 0xC220, "buzzer9");
 	}
 
 	if (ndev > 0)
@@ -220,9 +226,7 @@ usb_handler_thread::~usb_handler_thread()
 
 void usb_handler_thread::operator()()
 {
-	timeval lusb_tv;
-	memset(&lusb_tv, 0, sizeof(timeval));
-	lusb_tv.tv_usec = 200;
+	timeval lusb_tv{0, 200};
 
 	while (thread_ctrl::state() != thread_state::aborting)
 	{

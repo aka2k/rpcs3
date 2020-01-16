@@ -57,6 +57,9 @@ namespace rsx
 								static_cast<rsx::primitive_type>(m_current_job->aux_param0),
 								m_current_job->length);
 							break;
+						case callback:
+							rsx::get_current_renderer()->renderctl(m_current_job->aux_param0, m_current_job->src);
+							break;
 						default:
 							ASSUME(0);
 							fmt::throw_exception("Unreachable" HERE);
@@ -119,18 +122,27 @@ namespace rsx
 		}
 	}
 
+	// Backend callback
+	void dma_manager::backend_ctrl(u32 request_code, void* args)
+	{
+		verify(HERE), g_cfg.video.multithreaded_rsx;
+
+		++m_enqueued_count;
+		m_work_queue.push(request_code, args);
+	}
+
 	// Synchronization
 	bool dma_manager::is_current_thread() const
 	{
 		return (std::this_thread::get_id() == m_thread_id);
 	}
 
-	void dma_manager::sync()
+	bool dma_manager::sync()
 	{
 		if (LIKELY(m_enqueued_count.load() == m_processed_count))
 		{
 			// Nothing to do
-			return;
+			return true;
 		}
 
 		if (auto rsxthr = get_current_renderer(); rsxthr->is_current_thread())
@@ -138,7 +150,7 @@ namespace rsx
 			if (m_mem_fault_flag)
 			{
 				// Abort if offloader is in recovery mode
-				return;
+				return false;
 			}
 
 			while (m_enqueued_count.load() != m_processed_count)
@@ -152,6 +164,8 @@ namespace rsx
 			while (m_enqueued_count.load() != m_processed_count)
 				_mm_pause();
 		}
+
+		return true;
 	}
 
 	void dma_manager::join()

@@ -1,14 +1,23 @@
 ﻿{
 	"advanced": {
+		"libraries": {
+			"manual": "Allows the user to manually choose the LLE libraries to load.\nIf unsure, don't use this option. Nothing will work if you use this.",
+			"both": "Load libsysmodule.sprx and chosen list of libraries. Option for backward compatibility.\nIf unsure, don't use this option.",
+			"liblv2both": "Loads liblv2.sprx and chosen list of libraries.\nIf unsure, don't use this option.",
+			"liblv2list": "Loads liblv2.sprx and nothing but selected libraries.\nDon't use this option.",
+			"liblv2": "This closely emulates how games can load and unload system module files on a real PlayStation 3.\nSome games require this.\nThis is the preferred option."
+		},
 		"debugConsoleMode": "Increases the amount of usable system memory to match a DECR console and more.\nCauses some software to behave differently than on retail hardware.",
 		"readColor": "Initializes render target memory using vm memory.",
 		"readDepth": "Initializes render target memory using vm memory.",
 		"dumpDepth": "Writes depth buffer values to vm memory.",
 		"disableOnDiskShaderCache": "Disables the loading and saving of shaders from and to the shader cache in the data directory.",
+		"relaxedZCULL": "Changes ZCULL report synchronization behaviour to be more forgiving to PC architecture.\nCan improve performance in some games but can also cause stability issues or drastically reduced performance in others.\nUse with caution and if performance or stability is compromised, keep this disabled.",
 		"maxSPURSThreads": "Limits the maximum number of SPURS threads in each thread group.\nMay improve performance in some cases, especially on systems with limited number of hardware threads.\nLimiting the number of threads is likely to cause crashes; it's recommended to keep this at default value.",
 		"sleepTimersAccuracy": "Changes the sleep period accuracy.\n'As Host' uses default accuracy of the underlying operating system, while 'All Timers' attempts to improve it.\n'Usleep Only' limits the adjustments to usleep syscall only.\nCan affect perfomance in unexpected ways.",
 		"vblankRate": "Adjusts the frequency of vertical blanking signals that the emulator sends.\nAffects timing of events which rely on these signals.",
 		"clocksScale": "Changes the scale of emulated system time.\nAffects software which uses system time to calculate things such as dynamic timesteps.",
+		"wakeupDelay": "Try fiddling with this setting when encountering unstable games. The higher value, the better stability it may provide.\nIncrements/Decrements for each test should be around 100μs to 200μs until finding the best value for optimal stability.\nValues above 1000μs may cause noticeable performance penalties, use with caution.",
 		"disabledFromGlobal": "Do not change this setting globally.\nRight-click the game in game list and choose \"Configure\" instead."
 	},
 	"audio": {
@@ -35,13 +44,6 @@
 			"fast": "This is slower than the SPU Recompiler but significantly faster than the precise interpreter.\nGames rarely need this however.",
 			"ASMJIT": "This is the fast option with very good compatibility.\nIf unsure, use this option.",
 			"LLVM": "This is the fastest option with very good compatibility.\nRecompiles the game's SPU LLVM cache before running which adds extra start-up time.\nIf you experience issues, use the ASMJIT Recompiler."
-		},
-		"libraries": {
-			"manual": "Allows the user to manually choose the LLE libraries to load.\nIf unsure, don't use this option. Nothing will work if you use this.",
-			"both": "Load libsysmodule.sprx and chosen list of libraries. Option for backward compatibility.\nIf unsure, don't use this option.",
-			"liblv2both": "Loads liblv2.sprx and chosen list of libraries.\nIf unsure, don't use this option.",
-			"liblv2list": "Loads liblv2.sprx and nothing but selected libraries.\nDon't use this option.",
-			"liblv2": "This closely emulates how games can load and unload system module files on a real PlayStation 3.\nSome games require this.\nThis is the preferred option."
 		},
 		"checkboxes": {
 			"accurateXFloat": "Fixes bugs in various games at the cost of performance.\nThis setting is only applied when SPU LLVM is active.",
@@ -114,7 +116,7 @@
 			"renderBox": "Vulkan is the fastest renderer. OpenGL is the most accurate renderer.\nIf unsure, use Vulkan. Should you have any compatibility issues, fall back to OpenGL.",
 			"resBox": "This setting will be ignored if the Resolution Scale is set to anything other than 100%!\nLeave this on 1280x720, every PS3 game is compatible with this resolution.\nOnly use 1920x1080 if the game supports it.\nRarely due to emulation bugs some games will only render at low resolutions like 480p.",
 			"graphicsAdapterBox": "On multi GPU systems select which GPU to use in RPCS3 when using Vulkan.\nThis is not needed when using OpenGL.",
-			"aspectBox": "Leave this on 16:9 unless you have a 4:3 monitor.\nAuto also works well, especially if you use a resolution that is not 720p.",
+			"aspectBox": "Leave this on 16:9 unless you have a 4:3 monitor.",
 			"frameLimitBox": "Off is the best option as it performs faster.\nUsing the frame limiter will add extra overhead and slow down the game.\nHowever, some games will crash if the frame rate is too high.\nIf that happens, set value to anything other than Off.",
 			"antiAliasing": "Emulate PS3 multisampling layout.\nCan fix some otherwise difficult to solve graphics glitches.\nLow to moderate performance hit depending on your GPU hardware.",
 			"anisotropicFilterOverride": "Higher values increase sharpness of textures on sloped surfaces at the cost of GPU resources.\nModern GPUs can handle this setting just fine even at 16x.\nKeep this on Automatic if you want to use the original setting used by a real PS3."
@@ -134,6 +136,8 @@
 		}
 	},
 	"gui": {
+		"log_limit": "Sets the maximum amount of blocks that the log can display.\nThis usually equals the number of lines.\nSet 0 in order to remove the limit.",
+		"tty_limit": "Sets the maximum amount of blocks that the tty can display.\nThis usually equals the number of lines.\nSet 0 in order to remove the limit.",
 		"configs": "Only useful to developers.\nIf unsure, don't use this option.",
 		"stylesheets": "Changes the overall look of RPCS3.\nChoose a stylesheet and click Apply to change between styles.",
 		"show_welcome": "Shows the initial welcome screen upon starting RPCS3.",

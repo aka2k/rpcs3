@@ -156,6 +156,9 @@ bool keyboard_pad_handler::eventFilter(QObject* target, QEvent* ev)
 		case QEvent::MouseMove:
 			mouseMoveEvent(static_cast<QMouseEvent*>(ev));
 			break;
+		case QEvent::Wheel:
+			mouseWheelEvent(static_cast<QWheelEvent*>(ev));
+			break;
 		default:
 			break;
 		}
@@ -376,6 +379,46 @@ void keyboard_pad_handler::mouseMoveEvent(QMouseEvent* event)
 	}
 
 	event->ignore();
+}
+
+void keyboard_pad_handler::mouseWheelEvent(QWheelEvent* event)
+{
+	QPoint direction = event->angleDelta();
+
+	if (direction.isNull())
+	{
+		// Scrolling started/ended event, no direction given
+		return;
+	}
+
+	if (const int x = direction.x())
+	{
+		bool to_left = event->inverted() ? x < 0 : x > 0;
+		if (to_left)
+		{
+			Key(mouse::wheel_left, true);
+			m_last_wheel_move_left = std::chrono::steady_clock::now();
+		}
+		else
+		{
+			Key(mouse::wheel_right, true);
+			m_last_wheel_move_right = std::chrono::steady_clock::now();
+		}
+	}
+	if (const int y = direction.y())
+	{
+		bool to_up = event->inverted() ? y < 0 : y > 0;
+		if (to_up)
+		{
+			Key(mouse::wheel_up, true);
+			m_last_wheel_move_up = std::chrono::steady_clock::now();
+		}
+		else
+		{
+			Key(mouse::wheel_down, true);
+			m_last_wheel_move_down = std::chrono::steady_clock::now();
+		}
+	}
 }
 
 std::vector<std::string> keyboard_pad_handler::ListDevices()
@@ -658,5 +701,31 @@ void keyboard_pad_handler::ThreadProc()
 				m_stick_time = now;
 			}
 		}
+	}
+
+	// Releases the wheel buttons 0,1 sec after they've been triggered
+	// Next activation is set to distant future to avoid activating this on every proc
+	const auto now = std::chrono::steady_clock::now();
+	const auto update_threshold = now - std::chrono::milliseconds(100);
+	const auto distant_future = now + std::chrono::hours(24);
+	if (update_threshold >= m_last_wheel_move_up)
+	{
+		Key(mouse::wheel_up, false);
+		m_last_wheel_move_up = distant_future;
+	}
+	if (update_threshold >= m_last_wheel_move_down)
+	{
+		Key(mouse::wheel_down, false);
+		m_last_wheel_move_down = distant_future;
+	}
+	if (update_threshold >= m_last_wheel_move_left)
+	{
+		Key(mouse::wheel_left, false);
+		m_last_wheel_move_left = distant_future;
+	}
+	if (update_threshold >= m_last_wheel_move_right)
+	{
+		Key(mouse::wheel_right, false);
+		m_last_wheel_move_right = distant_future;
 	}
 }

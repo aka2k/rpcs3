@@ -290,8 +290,9 @@ bool game_list_frame::IsEntryVisible(const game_info& game)
 		return category::CategoryInMap(game->info.category, category::cat_boot);
 	};
 
-	bool is_visible = m_show_hidden || !m_hidden_list.contains(qstr(game->info.serial));
-	return is_visible && matches_category() && SearchMatchesApp(game->info.name, game->info.serial);
+	const QString serial = qstr(game->info.serial);
+	bool is_visible = m_show_hidden || !m_hidden_list.contains(serial);
+	return is_visible && matches_category() && SearchMatchesApp(qstr(game->info.name), serial);
 }
 
 void game_list_frame::SortGameList()
@@ -575,12 +576,22 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 					return;
 				}
 
-				QString serial = qstr(game.serial);
-				m_notes[serial] = m_gui_settings->GetValue(gui::notes, serial, "").toString();
-				m_titles[serial] = m_gui_settings->GetValue(gui::titles, serial, "").toString().simplified();
+				const QString serial = qstr(game.serial);
+				const QString note = m_gui_settings->GetValue(gui::notes, serial, "").toString();
+				const QString title = m_gui_settings->GetValue(gui::titles, serial, "").toString().simplified();
 				m_gui_settings->SetLastPlayed(serial, m_gui_settings->GetValue(gui::last_played, serial, "").toString());
 				m_gui_settings->SetPlaytime(serial, m_gui_settings->GetValue(gui::playtime, serial, 0).toInt());
 				serials.insert(serial);
+
+				if (!note.isEmpty())
+				{
+					m_notes.insert(serial, note);
+				}
+
+				if (!title.isEmpty())
+				{
+					m_titles.insert(serial, title);
+				}
 
 				auto cat = category::cat_boot.find(game.category);
 				if (cat != category::cat_boot.end())
@@ -682,10 +693,8 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 		// Sort by name at the very least.
 		std::sort(m_game_data.begin(), m_game_data.end(), [&](const game_info& game1, const game_info& game2)
 		{
-			const QString custom_title1 = m_titles[qstr(game1->info.serial)];
-			const QString custom_title2 = m_titles[qstr(game2->info.serial)];
-			const QString title1 = custom_title1.isEmpty() ? qstr(game1->info.name) : custom_title1;
-			const QString title2 = custom_title2.isEmpty() ? qstr(game2->info.name) : custom_title2;
+			const QString title1 = m_titles.value(qstr(game1->info.serial), qstr(game1->info.name));
+			const QString title2 = m_titles.value(qstr(game2->info.serial), qstr(game2->info.name));
 			return title1.toLower() < title2.toLower();
 		});
 
@@ -721,7 +730,7 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 			games_per_row = width() / (m_Icon_Size.width() + m_Icon_Size.width() * m_xgrid->getMarginFactor() * 2);
 		}
 
-		int scroll_position = m_xgrid->verticalScrollBar()->value();
+		const int scroll_position = m_xgrid->verticalScrollBar()->value();
 		PopulateGameGrid(games_per_row, m_Icon_Size, m_Icon_Color);
 		connect(m_xgrid, &QTableWidget::itemDoubleClicked, this, &game_list_frame::doubleClickedSlot);
 		connect(m_xgrid, &QTableWidget::customContextMenuRequested, this, &game_list_frame::ShowContextMenu);
@@ -879,7 +888,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		{
 			if (RemoveCustomConfiguration(currGame.serial, gameinfo, true))
 			{
-				ShowCustomConfigIcon(item);
+				ShowCustomConfigIcon(gameinfo);
 			}
 		});
 	}
@@ -890,7 +899,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		{
 			if (RemoveCustomPadConfiguration(currGame.serial, gameinfo, true))
 			{
-				ShowCustomConfigIcon(item);
+				ShowCustomConfigIcon(gameinfo);
 			}
 		});
 	}
@@ -972,7 +981,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			if (!gameinfo->hasCustomConfig)
 			{
 				gameinfo->hasCustomConfig = true;
-				ShowCustomConfigIcon(item);
+				ShowCustomConfigIcon(gameinfo);
 			}
 			Q_EMIT NotifyEmuSettingsChange();
 		}
@@ -995,7 +1004,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 		if (dlg.exec() == QDialog::Accepted && !gameinfo->hasCustomPadConfig)
 		{
 			gameinfo->hasCustomPadConfig = true;
-			ShowCustomConfigIcon(item);
+			ShowCustomConfigIcon(gameinfo);
 		}
 		if (!Emu.IsStopped())
 		{
@@ -1078,7 +1087,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			}
 			else
 			{
-				m_titles[serial] = new_title;
+				m_titles.insert(serial, new_title);
 				m_gui_settings->SetValue(gui::titles, serial, new_title);
 			}
 			Refresh(true); // full refresh in order to reliably sort the list
@@ -1099,7 +1108,7 @@ void game_list_frame::ShowContextMenu(const QPoint &pos)
 			}
 			else
 			{
-				m_notes[serial] = new_notes;
+				m_notes.insert(serial, new_notes);
 				m_gui_settings->SetValue(gui::notes, serial, new_notes);
 			}
 			Refresh();
@@ -1239,24 +1248,25 @@ bool game_list_frame::RemoveShadersCache(const std::string& base_dir, bool is_in
 	u32 caches_removed = 0;
 	u32 caches_total   = 0;
 
-	QDirIterator dir_iter(qstr(base_dir), QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	const QStringList filter{ QStringLiteral("shaders_cache") };
+
+	QDirIterator dir_iter(qstr(base_dir), filter, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+
 	while (dir_iter.hasNext())
 	{
 		const QString filepath = dir_iter.next();
 
-		if (dir_iter.fileName() == "shaders_cache")
+		if (QDir(filepath).removeRecursively())
 		{
-			if (QDir(filepath).removeRecursively())
-			{
-				++caches_removed;
-				LOG_NOTICE(GENERAL, "Removed shaders cache dir: %s", sstr(filepath));
-			}
-			else
-			{
-				LOG_WARNING(GENERAL, "Could not completely remove shaders cache dir: %s", sstr(filepath));
-			}
-			++caches_total;
+			++caches_removed;
+			LOG_NOTICE(GENERAL, "Removed shaders cache dir: %s", sstr(filepath));
 		}
+		else
+		{
+			LOG_WARNING(GENERAL, "Could not completely remove shaders cache dir: %s", sstr(filepath));
+		}
+
+		++caches_total;
 	}
 
 	const bool success = caches_total == caches_removed;
@@ -1280,24 +1290,25 @@ bool game_list_frame::RemovePPUCache(const std::string& base_dir, bool is_intera
 	u32 files_removed = 0;
 	u32 files_total = 0;
 
-	QDirIterator dir_iter(qstr(base_dir), QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	const QStringList filter{ QStringLiteral("v*.obj"), QStringLiteral("v*.obj.gz") };
+
+	QDirIterator dir_iter(qstr(base_dir), filter, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+
 	while (dir_iter.hasNext())
 	{
 		const QString filepath = dir_iter.next();
 
-		if (QString::compare(dir_iter.fileInfo().suffix(), QStringLiteral("obj"), Qt::CaseInsensitive) == 0)
+		if (QFile::remove(filepath))
 		{
-			if (QFile::remove(filepath))
-			{
-				++files_removed;
-				LOG_NOTICE(GENERAL, "Removed PPU cache file: %s", sstr(filepath));
-			}
-			else
-			{
-				LOG_WARNING(GENERAL, "Could not remove PPU cache file: %s", sstr(filepath));
-			}
-			++files_total;
+			++files_removed;
+			LOG_NOTICE(GENERAL, "Removed PPU cache file: %s", sstr(filepath));
 		}
+		else
+		{
+			LOG_WARNING(GENERAL, "Could not remove PPU cache file: %s", sstr(filepath));
+		}
+
+		++files_total;
 	}
 
 	const bool success = files_total == files_removed;
@@ -1321,24 +1332,25 @@ bool game_list_frame::RemoveSPUCache(const std::string& base_dir, bool is_intera
 	u32 files_removed = 0;
 	u32 files_total = 0;
 
-	QDirIterator dir_iter(qstr(base_dir), QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	const QStringList filter{ QStringLiteral("spu*.dat"), QStringLiteral("spu*.dat.gz"), QStringLiteral("spu*.obj"), QStringLiteral("spu*.obj.gz") };
+
+	QDirIterator dir_iter(qstr(base_dir), filter, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+
 	while (dir_iter.hasNext())
 	{
 		const QString filepath = dir_iter.next();
 
-		if (QString::compare(dir_iter.fileInfo().suffix(), QStringLiteral("dat"), Qt::CaseInsensitive) == 0)
+		if (QFile::remove(filepath))
 		{
-			if (QFile::remove(filepath))
-			{
-				++files_removed;
-				LOG_NOTICE(GENERAL, "Removed SPU cache file: %s", sstr(filepath));
-			}
-			else
-			{
-				LOG_WARNING(GENERAL, "Could not remove SPU cache file: %s", sstr(filepath));
-			}
-			++files_total;
+			++files_removed;
+			LOG_NOTICE(GENERAL, "Removed SPU cache file: %s", sstr(filepath));
 		}
+		else
+		{
+			LOG_WARNING(GENERAL, "Could not remove SPU cache file: %s", sstr(filepath));
+		}
+
+		++files_total;
 	}
 
 	const bool success = files_total == files_removed;
@@ -1361,7 +1373,7 @@ void game_list_frame::BatchCreatePPUCaches()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("PPU Cache Batch Creation"), tr("Creating all PPU caches"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("PPU Cache Batch Creation"), tr("Creating all PPU caches"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1406,7 +1418,7 @@ void game_list_frame::BatchRemovePPUCaches()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("PPU Cache Batch Removal"), tr("Removing all PPU caches"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("PPU Cache Batch Removal"), tr("Removing all PPU caches"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1491,7 +1503,7 @@ void game_list_frame::BatchRemoveCustomConfigurations()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("Custom Configuration Batch Removal"), tr("Removing all custom configurations"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("Custom Configuration Batch Removal"), tr("Removing all custom configurations"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1536,7 +1548,7 @@ void game_list_frame::BatchRemoveCustomPadConfigurations()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("Custom Pad Configuration Batch Removal"), tr("Removing all custom pad configurations"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("Custom Pad Configuration Batch Removal"), tr("Removing all custom pad configurations"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1578,7 +1590,7 @@ void game_list_frame::BatchRemoveShaderCaches()
 		return;
 	}
 
-	progress_dialog* pdlg = new progress_dialog(tr("Shader Cache Batch Removal"), tr("Removing all shader caches"), tr("Cancel"), 0, total, this);
+	progress_dialog* pdlg = new progress_dialog(tr("Shader Cache Batch Removal"), tr("Removing all shader caches"), tr("Cancel"), 0, total, true, this);
 	pdlg->setAutoClose(false);
 	pdlg->setAutoReset(false);
 	pdlg->show();
@@ -1659,33 +1671,27 @@ QPixmap game_list_frame::PaintedPixmap(const QPixmap& icon, bool paint_config_ic
 	return canvas.scaled(m_Icon_Size * device_pixel_ratio, Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation);
 }
 
-void game_list_frame::ShowCustomConfigIcon(QTableWidgetItem* item)
+void game_list_frame::ShowCustomConfigIcon(game_info game)
 {
-	auto game = GetGameInfoFromItem(item);
-	if (game == nullptr)
+	if (!game)
 	{
 		return;
 	}
 
-	if (!m_isListLayout)
-	{
-		const QString custom_title = m_titles[QString::fromStdString(game->info.serial)];
-		const QString title = custom_title.isEmpty() ? qstr(game->info.name) : custom_title;
-		const QColor color = getGridCompatibilityColor(game->compat.color);
+	const std::string serial      = game->info.serial;
+	const bool hasCustomConfig    = game->hasCustomConfig;
+	const bool hasCustomPadConfig = game->hasCustomPadConfig;
 
-		game->pxmap = PaintedPixmap(game->icon, game->hasCustomConfig, game->hasCustomPadConfig, color);
-		int r = m_xgrid->currentItem()->row(), c = m_xgrid->currentItem()->column();
-		m_xgrid->addItem(game->pxmap, title.simplified(), r, c);
-		m_xgrid->item(r, c)->setData(gui::game_role, QVariant::fromValue(game));
+	for (auto other_game : m_game_data)
+	{
+		if (other_game->info.serial == serial)
+		{
+			other_game->hasCustomConfig    = hasCustomConfig;
+			other_game->hasCustomPadConfig = hasCustomPadConfig;
+		}
 	}
-	else if (game->hasCustomConfig && game->hasCustomPadConfig)
-		m_gameList->item(item->row(), gui::column_name)->setIcon(QIcon(":/Icons/combo_config_bordered.png"));
-	else if (game->hasCustomConfig)
-		m_gameList->item(item->row(), gui::column_name)->setIcon(QIcon(":/Icons/custom_config.png"));
-	else if (game->hasCustomPadConfig)
-		m_gameList->item(item->row(), gui::column_name)->setIcon(QIcon(":/Icons/controllers.png"));
-	else
-		m_gameList->item(item->row(), gui::column_name)->setIcon(QIcon());
+
+	RepaintIcons();
 }
 
 void game_list_frame::ResizeIcons(const int& sliderPos)
@@ -1717,7 +1723,7 @@ void game_list_frame::RepaintIcons(const bool& fromSettings)
 	QtConcurrent::blockingMap(indices, [this](int& i)
 	{
 		auto game = m_game_data[i];
-		QColor color = getGridCompatibilityColor(game->compat.color);
+		const QColor color = getGridCompatibilityColor(game->compat.color);
 		game->pxmap = PaintedPixmap(game->icon, game->hasCustomConfig, game->hasCustomPadConfig, color);
 	});
 
@@ -1871,9 +1877,8 @@ int game_list_frame::PopulateGameList()
 			continue;
 
 		const QString serial = qstr(game->info.serial);
-		const QString custom_title = m_titles[serial];
-		const QString title = custom_title.isEmpty() ? qstr(game->info.name) : custom_title;
-		const QString notes = m_notes[serial];
+		const QString title = m_titles.value(serial, qstr(game->info.name));
+		const QString notes = m_notes.value(serial);
 
 		// Icon
 		custom_table_widget_item* icon_item = new custom_table_widget_item;
@@ -1966,11 +1971,11 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 	int r = 0;
 	int c = 0;
 
-	std::string selected_item = CurrentSelectionIconPath();
+	const std::string selected_item = CurrentSelectionIconPath();
 
 	m_xgrid->deleteLater();
 
-	bool showText = m_icon_size_index > gui::gl_max_slider_pos * 2 / 5;
+	const bool showText = m_icon_size_index > gui::gl_max_slider_pos * 2 / 5;
 
 	if (m_icon_size_index < gui::gl_max_slider_pos * 2 / 3)
 	{
@@ -1992,7 +1997,7 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 		}
 	}
 
-	int entries = matching_apps.count();
+	const int entries = matching_apps.count();
 
 	// Edge cases!
 	if (entries == 0)
@@ -2002,17 +2007,16 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 
 	maxCols = std::clamp(maxCols, 1, entries);
 
-	int needsExtraRow = (entries % maxCols) != 0;
-	int maxRows = needsExtraRow + entries / maxCols;
+	const int needsExtraRow = (entries % maxCols) != 0;
+	const int maxRows = needsExtraRow + entries / maxCols;
 	m_xgrid->setRowCount(maxRows);
 	m_xgrid->setColumnCount(maxCols);
 
 	for (const auto& app : matching_apps)
 	{
 		const QString serial = qstr(app->info.serial);
-		const QString custom_title = m_titles[serial];
-		const QString title = custom_title.isEmpty() ? qstr(app->info.name) : custom_title;
-		const QString notes = m_notes[serial];
+		const QString title = m_titles.value(serial, qstr(app->info.name));
+		const QString notes = m_notes.value(serial);
 
 		m_xgrid->addItem(app->pxmap, title, r, c);
 		m_xgrid->item(r, c)->setData(gui::game_role, QVariant::fromValue(app));
@@ -2057,12 +2061,12 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 /**
 * Returns false if the game should be hidden because it doesn't match search term in toolbar.
 */
-bool game_list_frame::SearchMatchesApp(const std::string& name, const std::string& serial)
+bool game_list_frame::SearchMatchesApp(const QString& name, const QString& serial) const
 {
 	if (!m_search_text.isEmpty())
 	{
-		QString searchText = m_search_text.toLower();
-		return qstr(name).toLower().contains(searchText) || qstr(serial).toLower().contains(searchText);
+		const QString searchText = m_search_text.toLower();
+		return m_titles.value(serial, name).toLower().contains(searchText) || serial.toLower().contains(searchText);
 	}
 	return true;
 }

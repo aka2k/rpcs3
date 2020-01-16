@@ -82,10 +82,10 @@ struct vdec_frame
 	};
 
 	std::unique_ptr<AVFrame, frame_dtor> avf;
-	u64 dts;
-	u64 pts;
-	u64 userdata;
-	u32 frc;
+	u64 dts{};
+	u64 pts{};
+	u64 userdata{};
+	u32 frc{};
 	bool PicItemRecieved = false;
 
 	AVFrame* operator ->() const
@@ -769,7 +769,9 @@ error_code cellVdecGetPicItem(u32 handle, vm::pptr<CellVdecPicItem> picItem)
 
 	info->codecType = vdec->type;
 	info->startAddr = 0x00000123; // invalid value (no address for picture)
-	info->size = align(av_image_get_buffer_size(vdec->ctx->pix_fmt, vdec->ctx->width, vdec->ctx->height, 1), 128);
+	const int buffer_size = av_image_get_buffer_size(vdec->ctx->pix_fmt, vdec->ctx->width, vdec->ctx->height, 1);
+	verify(HERE), (buffer_size >= 0);
+	info->size = align<u32>(buffer_size, 128);
 	info->auNum = 1;
 	info->auPts[0].lower = static_cast<u32>(pts);
 	info->auPts[0].upper = static_cast<u32>(pts >> 32);
@@ -929,13 +931,13 @@ error_code cellVdecSetFrameRate(u32 handle, CellVdecFrameRate frc)
 
 	const auto vdec = idm::get<vdec_context>(handle);
 
-	if (!vdec)
+	// 0x80 seems like a common prefix
+	if (!vdec || (frc & 0xf0) != 0x80)
 	{
 		return CELL_VDEC_ERROR_ARG;
 	}
 
-	// TODO: check frc value
-	vdec->in_cmd.push(frc);
+	vdec->in_cmd.push(CellVdecFrameRate{frc & 0x87});
 	return CELL_OK;
 }
 

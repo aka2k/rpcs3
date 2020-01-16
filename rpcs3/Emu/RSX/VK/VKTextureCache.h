@@ -197,7 +197,7 @@ namespace vk
 				const auto transfer_pitch = real_pitch;
 				const auto task_length = transfer_pitch * src_area.height();
 
-				auto working_buffer = vk::get_scratch_buffer();
+				auto working_buffer = vk::get_scratch_buffer(task_length);
 				auto final_mapping = vk::map_dma(cmd, valid_range.start, section_length);
 
 				VkBufferImageCopy region = {};
@@ -678,10 +678,10 @@ namespace vk
 						copy.imageOffset = { src_x, src_y, 0 };
 						copy.imageSubresource = { src_image->aspect(), 0, 0, 1 };
 
-						auto scratch_buf = vk::get_scratch_buffer();
+						const auto mem_length = src_w * src_h * dst_bpp;
+						auto scratch_buf = vk::get_scratch_buffer(mem_length);
 						vkCmdCopyImageToBuffer(cmd, src_image->value, src_image->current_layout, scratch_buf->value, 1, &copy);
 
-						const auto mem_length = src_w * src_h * dst_bpp;
 						vk::insert_buffer_memory_barrier(cmd, scratch_buf->value, 0, mem_length, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 							VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
@@ -1025,7 +1025,7 @@ namespace vk
 			return result;
 		}
 
-		vk::image_view* generate_2d_mipmaps_from_images(vk::command_buffer& cmd, u32 gcm_format, u16 width, u16 height,
+		vk::image_view* generate_2d_mipmaps_from_images(vk::command_buffer& cmd, u32 /*gcm_format*/, u16 width, u16 height,
 			const std::vector<copy_region_descriptor>& sections_to_copy, const rsx::texture_channel_remap_t& remap_vector) override
 		{
 			const auto _template = sections_to_copy.front().src;
@@ -1336,15 +1336,10 @@ namespace vk
 			if (cmd.access_hint != vk::command_buffer::access_type_hint::all)
 			{
 				// Primary access command queue, must restart it after
-				VkFence submit_fence;
-				VkFenceCreateInfo info{};
-				info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-				vkCreateFence(*m_device, &info, nullptr, &submit_fence);
+				vk::fence submit_fence(*m_device);
+				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, &submit_fence, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_TRUE);
 
-				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, submit_fence, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-
-				vk::wait_for_fence(submit_fence, GENERAL_WAIT_TIMEOUT);
-				vkDestroyFence(*m_device, submit_fence, nullptr);
+				vk::wait_for_fence(&submit_fence, GENERAL_WAIT_TIMEOUT);
 
 				CHECK_RESULT(vkResetCommandBuffer(cmd, 0));
 				cmd.begin();
@@ -1352,7 +1347,7 @@ namespace vk
 			else
 			{
 				// Auxilliary command queue with auto-restart capability
-				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_TRUE);
 			}
 
 			verify(HERE), cmd.flags == 0;

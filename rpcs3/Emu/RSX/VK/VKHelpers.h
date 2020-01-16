@@ -9,8 +9,9 @@
 #include <unordered_map>
 #include <variant>
 #include <stack>
+#include <deque>
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#ifdef HAVE_X11
 #include <X11/Xutil.h>
 #endif
 
@@ -32,17 +33,6 @@
 
 #define DESCRIPTOR_MAX_DRAW_CALLS 16384
 #define OCCLUSION_MAX_POOL_SIZE   DESCRIPTOR_MAX_DRAW_CALLS
-
-#define VERTEX_PARAMS_BIND_SLOT 0
-#define VERTEX_CONSTANT_BUFFERS_BIND_SLOT 1
-#define FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT 2
-#define FRAGMENT_STATE_BIND_SLOT 3
-#define FRAGMENT_TEXTURE_PARAMS_BIND_SLOT 4
-#define VERTEX_BUFFERS_FIRST_BIND_SLOT 5
-#define TEXTURES_FIRST_BIND_SLOT 8
-#define VERTEX_TEXTURES_FIRST_BIND_SLOT 24 //8+16
-
-#define VK_NUM_DESCRIPTOR_BINDINGS (VERTEX_TEXTURES_FIRST_BIND_SLOT + 4)
 
 #define FRAME_PRESENT_TIMEOUT 10000000ull // 10 seconds
 #define GENERAL_WAIT_TIMEOUT  2000000ull  // 2 seconds
@@ -107,6 +97,11 @@ namespace vk
 		VK_REMAP_VIEW_MULTISAMPLED = 0xDEADBEEF     // Special encoding for multisampled images; returns a multisampled image view
 	};
 
+	enum // callback commands
+	{
+		rctrl_queue_submit = 0x80000000
+	};
+
 	class context;
 	class render_device;
 	class swap_chain_image;
@@ -119,6 +114,8 @@ namespace vk
 	class mem_allocator_base;
 	struct memory_type_mapping;
 	struct gpu_formats_support;
+	struct fence;
+	struct pipeline_binding_table;
 
 	const vk::context *get_current_thread_ctx();
 	void set_current_thread_ctx(const vk::context &ctx);
@@ -132,6 +129,7 @@ namespace vk
 	bool emulate_primitive_restart(rsx::primitive_type type);
 	bool sanitize_fp_values();
 	bool fence_reset_disabled();
+	bool emulate_conditional_rendering();
 	VkFlags get_heap_compatible_buffer_types();
 	driver_vendor get_driver_vendor();
 	chip_class get_chip_family(uint32_t vendor_id, uint32_t device_id);
@@ -146,15 +144,17 @@ namespace vk
 	VkSampler null_sampler();
 	image_view* null_image_view(vk::command_buffer&);
 	image* get_typeless_helper(VkFormat format, u32 requested_width, u32 requested_height);
-	buffer* get_scratch_buffer();
+	buffer* get_scratch_buffer(u32 min_required_size = 0);
 	data_heap* get_upload_heap();
 
 	memory_type_mapping get_memory_mapping(const physical_device& dev);
 	gpu_formats_support get_optimal_tiling_supported_formats(const physical_device& dev);
+	pipeline_binding_table get_pipeline_binding_table(const physical_device& dev);
 
-	//Sync helpers around vkQueueSubmit
+	// Sync helpers around vkQueueSubmit
 	void acquire_global_submit_lock();
 	void release_global_submit_lock();
+	void queue_submit(VkQueue queue, const VkSubmitInfo* info, fence* pfence, VkBool32 flush = VK_FALSE);
 
 	template<class T>
 	T* get_compute_task();
@@ -222,8 +222,8 @@ namespace vk
 	const u64 get_last_completed_frame_id();
 
 	// Fence reset with driver workarounds in place
-	void reset_fence(VkFence *pFence);
-	VkResult wait_for_fence(VkFence pFence, u64 timeout = 0ull);
+	void reset_fence(fence* pFence);
+	VkResult wait_for_fence(fence* pFence, u64 timeout = 0ull);
 	VkResult wait_for_event(VkEvent pEvent, u64 timeout = 0ull);
 
 	// Handle unexpected submit with dangling occlusion query
@@ -231,6 +231,20 @@ namespace vk
 	void do_query_cleanup(vk::command_buffer& cmd);
 
 	void die_with_error(const char* faulting_addr, VkResult error_code);
+
+	struct pipeline_binding_table
+	{
+		u8 vertex_params_bind_slot = 0;
+		u8 vertex_constant_buffers_bind_slot = 1;
+		u8 fragment_constant_buffers_bind_slot = 2;
+		u8 fragment_state_bind_slot = 3;
+		u8 fragment_texture_params_bind_slot = 4;
+		u8 vertex_buffers_first_bind_slot = 5;
+		u8 conditional_render_predicate_slot = 8;
+		u8 textures_first_bind_slot = 9;
+		u8 vertex_textures_first_bind_slot = 9;  // Invalid, has to be initialized properly
+		u8 total_descriptor_bindings = vertex_textures_first_bind_slot; // Invalid, has to be initialized properly
+	};
 
 	struct memory_type_mapping
 	{
@@ -538,6 +552,8 @@ namespace vk
 		gpu_shader_types_support shader_types_support{};
 		VkPhysicalDeviceDriverPropertiesKHR driver_properties{};
 		bool stencil_export_support = false;
+		bool conditional_render_support = false;
+		bool host_query_reset_support = false;
 
 		friend class render_device;
 private:
@@ -587,6 +603,8 @@ private:
 			}
 
 			stencil_export_support = device_extensions.is_supported(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
+			conditional_render_support = device_extensions.is_supported(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+			host_query_reset_support = device_extensions.is_supported(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME);
 		}
 
 	public:
@@ -754,8 +772,15 @@ private:
 		physical_device *pgpu = nullptr;
 		memory_type_mapping memory_map{};
 		gpu_formats_support m_formats_support{};
+		pipeline_binding_table m_pipeline_binding_table{};
 		std::unique_ptr<mem_allocator_base> m_allocator;
 		VkDevice dev = VK_NULL_HANDLE;
+
+	public:
+		// Exported device endpoints
+		PFN_vkCmdBeginConditionalRenderingEXT cmdBeginConditionalRenderingEXT = nullptr;
+		PFN_vkCmdEndConditionalRenderingEXT cmdEndConditionalRenderingEXT = nullptr;
+		PFN_vkResetQueryPoolEXT resetQueryPoolEXT = nullptr;
 
 	public:
 		render_device() = default;
@@ -788,6 +813,16 @@ private:
 			if (pgpu->shader_types_support.allow_float16)
 			{
 				requested_extensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+			}
+
+			if (pgpu->conditional_render_support)
+			{
+				requested_extensions.push_back(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+			}
+
+			if (pgpu->host_query_reset_support)
+			{
+				requested_extensions.push_back(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME);
 			}
 
 			enabled_features.robustBufferAccess = VK_TRUE;
@@ -873,8 +908,21 @@ private:
 
 			CHECK_RESULT(vkCreateDevice(*pgpu, &device, nullptr, &dev));
 
+			// Import optional function endpoints
+			if (pgpu->conditional_render_support)
+			{
+				cmdBeginConditionalRenderingEXT = reinterpret_cast<PFN_vkCmdBeginConditionalRenderingEXT>(vkGetDeviceProcAddr(dev, "vkCmdBeginConditionalRenderingEXT"));
+				cmdEndConditionalRenderingEXT = reinterpret_cast<PFN_vkCmdEndConditionalRenderingEXT>(vkGetDeviceProcAddr(dev, "vkCmdEndConditionalRenderingEXT"));
+			}
+
+			if (pgpu->host_query_reset_support)
+			{
+				resetQueryPoolEXT = reinterpret_cast<PFN_vkResetQueryPoolEXT>(vkGetDeviceProcAddr(dev, "vkResetQueryPoolEXT"));
+			}
+
 			memory_map = vk::get_memory_mapping(pdev);
 			m_formats_support = vk::get_optimal_tiling_supported_formats(pdev);
+			m_pipeline_binding_table = vk::get_pipeline_binding_table(pdev);
 
 			if (g_cfg.video.disable_vulkan_mem_allocator)
 				m_allocator = std::make_unique<vk::mem_allocator_vk>(dev, pdev);
@@ -952,6 +1000,11 @@ private:
 			return m_formats_support;
 		}
 
+		const pipeline_binding_table& get_pipeline_binding_table() const
+		{
+			return m_pipeline_binding_table;
+		}
+
 		const gpu_shader_types_support& get_shader_types_support() const
 		{
 			return pgpu->shader_types_support;
@@ -970,6 +1023,16 @@ private:
 		bool get_alpha_to_one_support() const
 		{
 			return pgpu->features.alphaToOne != VK_FALSE;
+		}
+
+		bool get_conditional_render_support() const
+		{
+			return pgpu->conditional_render_support;
+		}
+
+		bool get_host_query_reset_support() const
+		{
+			return pgpu->host_query_reset_support;
 		}
 
 		mem_allocator_base* get_allocator() const
@@ -1022,12 +1085,60 @@ private:
 		}
 	};
 
+	struct fence
+	{
+		atomic_t<bool> flushed = false;
+		VkFence handle         = VK_NULL_HANDLE;
+		VkDevice owner         = VK_NULL_HANDLE;
+
+		fence(VkDevice dev)
+		{
+			owner = dev;
+			VkFenceCreateInfo info = {};
+			info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			CHECK_RESULT(vkCreateFence(dev, &info, nullptr, &handle));
+		}
+
+		~fence()
+		{
+			if (handle)
+			{
+				vkDestroyFence(owner, handle, nullptr);
+				handle = VK_NULL_HANDLE;
+			}
+		}
+
+		void reset()
+		{
+			vkResetFences(owner, 1, &handle);
+			flushed.release(false);
+		}
+
+		void signal_flushed()
+		{
+			flushed.release(true);
+		}
+
+		void wait_flush()
+		{
+			while (!flushed)
+			{
+				_mm_pause();
+			}
+		}
+
+		operator bool() const
+		{
+			return (handle != VK_NULL_HANDLE);
+		}
+	};
+
 	class command_buffer
 	{
 	private:
 		bool is_open = false;
 		bool is_pending = false;
-		VkFence m_submit_fence = VK_NULL_HANDLE;
+		fence* m_submit_fence = nullptr;
 
 	protected:
 		vk::command_pool *pool = nullptr;
@@ -1047,7 +1158,8 @@ private:
 			cb_has_blit_transfer = 2,
 			cb_has_dma_transfer = 4,
 			cb_has_open_query = 8,
-			cb_load_occluson_task = 16
+			cb_load_occluson_task = 16,
+			cb_has_conditional_render = 32
 		};
 		u32 flags = 0;
 
@@ -1066,9 +1178,7 @@ private:
 
 			if (auto_reset)
 			{
-				VkFenceCreateInfo info = {};
-				info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-				CHECK_RESULT(vkCreateFence(cmd_pool.get_owner(), &info, nullptr, &m_submit_fence));
+				m_submit_fence = new fence(cmd_pool.get_owner());
 			}
 
 			pool = &cmd_pool;
@@ -1080,7 +1190,9 @@ private:
 
 			if (m_submit_fence)
 			{
-				vkDestroyFence(pool->get_owner(), m_submit_fence, nullptr);
+				//vkDestroyFence(pool->get_owner(), m_submit_fence, nullptr);
+				delete m_submit_fence;
+				m_submit_fence = nullptr;
 			}
 		}
 
@@ -1116,7 +1228,8 @@ private:
 				wait_for_fence(m_submit_fence);
 				is_pending = false;
 
-				CHECK_RESULT(vkResetFences(pool->get_owner(), 1, &m_submit_fence));
+				//CHECK_RESULT(vkResetFences(pool->get_owner(), 1, &m_submit_fence));
+				reset_fence(m_submit_fence);
 				CHECK_RESULT(vkResetCommandBuffer(commands, 0));
 			}
 
@@ -1146,7 +1259,7 @@ private:
 			is_open = false;
 		}
 
-		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, VkFence fence, VkPipelineStageFlags pipeline_stage_flags)
+		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, fence* pfence, VkPipelineStageFlags pipeline_stage_flags, VkBool32 flush = VK_FALSE)
 		{
 			if (is_open)
 			{
@@ -1157,10 +1270,10 @@ private:
 			// Check for hanging queries to avoid driver hang
 			verify("close and submit of commandbuffer with a hanging query!" HERE), (flags & cb_has_open_query) == 0;
 
-			if (!fence)
+			if (!pfence)
 			{
-				fence = m_submit_fence;
-				is_pending = (fence != VK_NULL_HANDLE);
+				pfence = m_submit_fence;
+				is_pending = bool(pfence);
 			}
 
 			VkSubmitInfo infos = {};
@@ -1181,10 +1294,7 @@ private:
 				infos.pSignalSemaphores = &signal_semaphore;
 			}
 
-			acquire_global_submit_lock();
-			CHECK_RESULT(vkQueueSubmit(queue, 1, &infos, fence));
-			release_global_submit_lock();
-
+			queue_submit(queue, &infos, pfence, flush);
 			clear_flags();
 		}
 	};
@@ -1735,58 +1845,9 @@ private:
 		VkDevice m_device;
 	};
 
-	class swapchain_image_WSI
+	struct swapchain_image_WSI
 	{
-		VkImageView view = nullptr;
-		VkImage image = nullptr;
-		VkFormat internal_format;
-		vk::render_device *owner = nullptr;
-
-	public:
-		swapchain_image_WSI() = default;
-
-		void create(vk::render_device &dev, VkImage &swap_image, VkFormat format)
-		{
-			VkImageViewCreateInfo color_image_view = {};
-
-			color_image_view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			color_image_view.format = format;
-
-			color_image_view.components.r = VK_COMPONENT_SWIZZLE_R;
-			color_image_view.components.g = VK_COMPONENT_SWIZZLE_G;
-			color_image_view.components.b = VK_COMPONENT_SWIZZLE_B;
-			color_image_view.components.a = VK_COMPONENT_SWIZZLE_A;
-
-			color_image_view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			color_image_view.subresourceRange.baseMipLevel = 0;
-			color_image_view.subresourceRange.levelCount = 1;
-			color_image_view.subresourceRange.baseArrayLayer = 0;
-			color_image_view.subresourceRange.layerCount = 1;
-
-			color_image_view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-
-			color_image_view.image = swap_image;
-			vkCreateImageView(dev, &color_image_view, nullptr, &view);
-
-			image = swap_image;
-			internal_format = format;
-			owner = &dev;
-		}
-
-		void discard(vk::render_device &dev)
-		{
-			vkDestroyImageView(dev, view, nullptr);
-		}
-
-		operator VkImage&()
-		{
-			return image;
-		}
-
-		operator VkImageView&()
-		{
-			return view;
-		}
+		VkImage value = VK_NULL_HANDLE;
 	};
 
 	class swapchain_image_RPCS3 : public image
@@ -1878,7 +1939,7 @@ public:
 		virtual bool init() = 0;
 
 		virtual u32 get_swap_image_count() const = 0;
-		virtual VkImage& get_image(u32 index) = 0;
+		virtual VkImage get_image(u32 index) = 0;
 		virtual VkResult acquire_next_swapchain_image(VkSemaphore semaphore, u64 timeout, u32* result) = 0;
 		virtual void end_frame(command_buffer& cmd, u32 index) = 0;
 		virtual VkResult present(VkSemaphore semaphore, u32 index) = 0;
@@ -2078,7 +2139,7 @@ public:
 		{
 			fmt::throw_exception("Native macOS swapchain is not implemented yet!");
 		}
-#else
+#elif defined(HAVE_X11)
 
 	class swapchain_X11 : public native_swapchain_base
 	{
@@ -2185,6 +2246,37 @@ public:
 			src.first = false;
 			return VK_SUCCESS;
 		}
+#else
+
+	class swapchain_Wayland : public native_swapchain_base
+	{
+
+	public:
+		swapchain_Wayland(physical_device &gpu, uint32_t _present_queue, uint32_t _graphics_queue, VkFormat format = VK_FORMAT_B8G8R8A8_UNORM)
+		: native_swapchain_base(gpu, _present_queue, _graphics_queue, format)
+		{}
+
+		~swapchain_Wayland(){}
+
+		bool init() override
+		{
+			fmt::throw_exception("Native Wayland swapchain is not implemented yet!");
+		}
+
+		void create(display_handle_t& window_handle) override
+		{
+			fmt::throw_exception("Native Wayland swapchain is not implemented yet!");
+		}
+
+		void destroy(bool full=true) override
+		{
+			fmt::throw_exception("Native Wayland swapchain is not implemented yet!");
+		}
+
+		VkResult present(VkSemaphore /*semaphore*/, u32 index) override
+		{
+			fmt::throw_exception("Native Wayland swapchain is not implemented yet!");
+		}
 #endif
 
 		VkResult acquire_next_swapchain_image(VkSemaphore /*semaphore*/, u64 /*timeout*/, u32* result) override
@@ -2210,7 +2302,7 @@ public:
 			swapchain_images[index].second->do_dma_transfer(cmd);
 		}
 
-		VkImage& get_image(u32 index) override
+		VkImage get_image(u32 index) override
 		{
 			return swapchain_images[index].second->value;
 		}
@@ -2261,7 +2353,7 @@ public:
 			swapchain_images.resize(nb_swap_images);
 			for (u32 i = 0; i < nb_swap_images; ++i)
 			{
-				swapchain_images[i].create(dev, vk_images[i], m_surface_format);
+				swapchain_images[i].value = vk_images[i];
 			}
 		}
 
@@ -2309,9 +2401,6 @@ public:
 			{
 				if (m_vk_swapchain)
 				{
-					for (auto &img : swapchain_images)
-						img.discard(dev);
-
 					destroySwapchainKHR(pdev, m_vk_swapchain, nullptr);
 				}
 
@@ -2444,9 +2533,6 @@ public:
 			{
 				if (!swapchain_images.empty())
 				{
-					for (auto &img : swapchain_images)
-						img.discard(dev);
-
 					swapchain_images.clear();
 				}
 
@@ -2485,9 +2571,9 @@ public:
 			return queuePresentKHR(vk_present_queue, &present);
 		}
 
-		VkImage& get_image(u32 index) override
+		VkImage get_image(u32 index) override
 		{
-			return static_cast<VkImage&>(swapchain_images[index]);
+			return swapchain_images[index].value;
 		}
 
 		VkImageLayout get_optimal_present_layout() override
@@ -2594,11 +2680,13 @@ public:
 				extensions.push_back(VK_MVK_MACOS_SURFACE_EXTENSION_NAME);
 #else
 				bool found_surface_ext = false;
+#ifdef HAVE_X11
 				if (support.is_supported(VK_KHR_XLIB_SURFACE_EXTENSION_NAME))
 				{
 					extensions.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
 					found_surface_ext = true;
 				}
+#endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
 				if (support.is_supported(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME))
 				{
@@ -2697,12 +2785,17 @@ public:
 
 			CHECK_RESULT(vkCreateMacOSSurfaceMVK(m_instance, &createInfo, NULL, &m_surface));
 #else
+#ifdef HAVE_X11
 			using swapchain_NATIVE = swapchain_X11;
+#else
+			using swapchain_NATIVE = swapchain_Wayland;
+#endif
 
 			std::visit([&](auto&& p)
 			{
 				using T = std::decay_t<decltype(p)>;
 
+#ifdef HAVE_X11
 				if constexpr (std::is_same_v<T, std::pair<Display*, Window>>)
 				{
 					VkXlibSurfaceCreateInfoKHR createInfo = {};
@@ -2711,8 +2804,10 @@ public:
 					createInfo.window                     = p.second;
 					CHECK_RESULT(vkCreateXlibSurfaceKHR(this->m_instance, &createInfo, nullptr, &m_surface));
 				}
+				else
+#endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
-				else if constexpr (std::is_same_v<T, std::pair<wl_display*, wl_surface*>>)
+				if constexpr (std::is_same_v<T, std::pair<wl_display*, wl_surface*>>)
 				{
 					VkWaylandSurfaceCreateInfoKHR createInfo = {};
 					createInfo.sType                         = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
@@ -2722,10 +2817,10 @@ public:
 					force_wm_reporting_off = true;
 				}
 				else
+#endif
 				{
 					static_assert(std::conditional_t<true, std::false_type, T>::value, "Unhandled window_handle type in std::variant");
 				}
-#endif
 			}, window_handle);
 #endif
 
@@ -2912,11 +3007,62 @@ public:
 
 	class occlusion_query_pool
 	{
+		struct query_slot_info
+		{
+			bool any_passed;
+			bool active;
+			bool ready;
+		};
+
 		VkQueryPool query_pool = VK_NULL_HANDLE;
 		vk::render_device* owner = nullptr;
 
-		std::stack<u32> available_slots;
-		std::vector<bool> query_active_status;
+		std::deque<u32> available_slots;
+		std::vector<query_slot_info> query_slot_status;
+
+		inline bool poke_query(query_slot_info& query, u32 index, VkQueryResultFlags flags)
+		{
+			// Query is ready if:
+			// 1. Any sample has been determined to have passed the Z test
+			// 2. The backend has fully processed the query and found no hits
+
+			u32 result[2] = { 0, 0 };
+			switch (const auto error = vkGetQueryPoolResults(*owner, query_pool, index, 1, 8, result, 8, flags | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT))
+			{
+			case VK_SUCCESS:
+			{
+				if (result[0])
+				{
+					query.any_passed = true;
+					query.ready = true;
+					return true;
+				}
+				else if (result[1])
+				{
+					query.any_passed = false;
+					query.ready = true;
+					return true;
+				}
+
+				return false;
+			}
+			case VK_NOT_READY:
+			{
+				if (result[0])
+				{
+					query.any_passed = true;
+					query.ready = true;
+					return true;
+				}
+
+				return false;
+			}
+			default:
+				die_with_error(HERE, error);
+				return false;
+			}
+		}
+
 	public:
 
 		void create(vk::render_device &dev, u32 num_entries)
@@ -2930,7 +3076,7 @@ public:
 			owner = &dev;
 
 			// From spec: "After query pool creation, each query must be reset before it is used."
-			query_active_status.resize(num_entries, true);
+			query_slot_status.resize(num_entries, {});
 		}
 
 		void destroy()
@@ -2946,27 +3092,29 @@ public:
 
 		void initialize(vk::command_buffer &cmd)
 		{
-			const u32 count = ::size32(query_active_status);
+			const u32 count = ::size32(query_slot_status);
 			vkCmdResetQueryPool(cmd, query_pool, 0, count);
 
-			std::fill(query_active_status.begin(), query_active_status.end(), false);
+			query_slot_info value{};
+			std::fill(query_slot_status.begin(), query_slot_status.end(), value);
 
 			for (u32 n = 0; n < count; ++n)
 			{
-				available_slots.push(n);
+				available_slots.push_back(n);
 			}
 		}
 
 		void begin_query(vk::command_buffer &cmd, u32 index)
 		{
-			if (query_active_status[index])
+			if (query_slot_status[index].active)
 			{
 				//Synchronization must be done externally
 				vkCmdResetQueryPool(cmd, query_pool, index, 1);
+				query_slot_status[index] = {};
 			}
 
 			vkCmdBeginQuery(cmd, query_pool, index, 0);//VK_QUERY_CONTROL_PRECISE_BIT);
-			query_active_status[index] = true;
+			query_slot_status[index].active = true;
 		}
 
 		void end_query(vk::command_buffer &cmd, u32 index)
@@ -2976,50 +3124,43 @@ public:
 
 		bool check_query_status(u32 index)
 		{
-			u32 result[2] = {0, 0};
-			switch (const auto error = vkGetQueryPoolResults(*owner, query_pool, index, 1, 8, result, 8, VK_QUERY_RESULT_PARTIAL_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT))
-			{
-			case VK_SUCCESS:
-				return (result[0] || result[1]);
-			case VK_NOT_READY:
-				return false;
-			default:
-				die_with_error(HERE, error);
-				return false;
-			}
+			// NOTE: Keeps NVIDIA driver from using partial results as they are broken (always returns true)
+			const VkQueryResultFlags flags =
+				(vk::get_driver_vendor() == vk::driver_vendor::NVIDIA ? 0 : VK_QUERY_RESULT_PARTIAL_BIT);
+
+			return poke_query(query_slot_status[index], index, flags);
 		}
 
 		u32 get_query_result(u32 index)
 		{
-			u32 result[2] = { 0, 0 };
+			// Check for cached result
+			auto& query_info = query_slot_status[index];
 
-			do
+			// Wait for full result on NVIDIA to avoid getting garbage results
+			const VkQueryResultFlags flags =
+				(vk::get_driver_vendor() == vk::driver_vendor::NVIDIA ? VK_QUERY_RESULT_WAIT_BIT : VK_QUERY_RESULT_PARTIAL_BIT);
+
+			while (!query_info.ready)
 			{
-				switch (const auto error = vkGetQueryPoolResults(*owner, query_pool, index, 1, 8, result, 8, VK_QUERY_RESULT_PARTIAL_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT))
-				{
-				case VK_SUCCESS:
-					if (result[0]) return 1u;
-					if (result[1]) return 0u;  // Partial result can return SUCCESS when unavailable
-					continue;
-				case VK_NOT_READY:
-					if (result[0]) return 1u;  // Partial result can return NOT_READY when unavailable
-					continue;
-				default:
-					die_with_error(HERE, error);
-					return false;
-				}
+				poke_query(query_info, index, flags);
 			}
-			while (true);
+
+			return query_info.any_passed ? 1 : 0;
+		}
+
+		void get_query_result_indirect(vk::command_buffer &cmd, u32 index, VkBuffer dst, VkDeviceSize dst_offset)
+		{
+			vkCmdCopyQueryPoolResults(cmd, query_pool, index, 1, dst, dst_offset, 4, VK_QUERY_RESULT_WAIT_BIT);
 		}
 
 		void reset_query(vk::command_buffer &cmd, u32 index)
 		{
-			if (query_active_status[index])
+			if (query_slot_status[index].active)
 			{
 				vkCmdResetQueryPool(cmd, query_pool, index, 1);
 
-				query_active_status[index] = false;
-				available_slots.push(index);
+				query_slot_status[index] = {};
+				available_slots.push_back(index);
 			}
 		}
 
@@ -3032,9 +3173,9 @@ public:
 
 		void reset_all(vk::command_buffer &cmd)
 		{
-			for (u32 n = 0; n < query_active_status.size(); n++)
+			for (u32 n = 0; n < query_slot_status.size(); n++)
 			{
-				if (query_active_status[n])
+				if (query_slot_status[n].active)
 					reset_query(cmd, n);
 			}
 		}
@@ -3046,10 +3187,10 @@ public:
 				return ~0u;
 			}
 
-			u32 result = available_slots.top();
-			available_slots.pop();
+			u32 result = available_slots.front();
+			available_slots.pop_front();
 
-			verify(HERE), !query_active_status[result];
+			verify(HERE), !query_slot_status[result].active;
 			return result;
 		}
 	};
@@ -3412,8 +3553,6 @@ public:
 			void bind_uniform(const VkBufferView &buffer_view, program_input_type type, const std::string &binding_name, VkDescriptorSet &descriptor_set);
 
 			void bind_buffer(const VkDescriptorBufferInfo &buffer_descriptor, uint32_t binding_point, VkDescriptorType type, VkDescriptorSet &descriptor_set);
-
-			u64 get_vertex_input_attributes_mask();
 		};
 	}
 

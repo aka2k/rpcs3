@@ -7,7 +7,10 @@
 #include "VKResolveHelper.h"
 #include "VKResourceManager.h"
 #include "VKDMA.h"
+#include "VKCommandStream.h"
+
 #include "Utilities/mutex.h"
+#include "Utilities/lockless.h"
 
 namespace vk
 {
@@ -87,12 +90,10 @@ namespace vk
 	bool g_drv_no_primitive_restart_flag = false;
 	bool g_drv_sanitize_fp_values = false;
 	bool g_drv_disable_fence_reset = false;
+	bool g_drv_emulate_cond_render = false;
 
 	u64 g_num_processed_frames = 0;
 	u64 g_num_total_frames = 0;
-
-	// global submit guard to prevent race condition on queue submit
-	shared_mutex g_submit_mutex;
 
 	VKAPI_ATTR void* VKAPI_CALL mem_realloc(void* pUserData, void* pOriginal, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
 	{
@@ -226,6 +227,17 @@ namespace vk
 		return result;
 	}
 
+	pipeline_binding_table get_pipeline_binding_table(const vk::physical_device& dev)
+	{
+		pipeline_binding_table result{};
+
+		// Need to check how many samplers are supported by the driver
+		const auto usable_samplers = std::min(dev.get_limits().maxPerStageDescriptorSampledImages, 32u);
+		result.vertex_textures_first_bind_slot = result.textures_first_bind_slot + usable_samplers;
+		result.total_descriptor_bindings = result.vertex_textures_first_bind_slot + 4;
+		return result;
+	}
+
 	chip_class get_chip_family(uint32_t vendor_id, uint32_t device_id)
 	{
 		if (vendor_id == 0x10DE)
@@ -326,12 +338,20 @@ namespace vk
 		return ptr.get();
 	}
 
-	vk::buffer* get_scratch_buffer()
+	vk::buffer* get_scratch_buffer(u32 min_required_size)
 	{
+		if (g_scratch_buffer && g_scratch_buffer->size() < min_required_size)
+		{
+			// Scratch heap cannot fit requirements. Discard it and allocate a new one.
+			vk::get_resource_manager()->dispose(g_scratch_buffer);
+		}
+
 		if (!g_scratch_buffer)
 		{
-			// 128M disposable scratch memory
-			g_scratch_buffer = std::make_unique<vk::buffer>(*g_current_renderer, 128 * 0x100000,
+			// Choose optimal size
+			const u64 alloc_size = std::max<u64>(64 * 0x100000, align(min_required_size, 0x100000));
+
+			g_scratch_buffer = std::make_unique<vk::buffer>(*g_current_renderer, alloc_size,
 				g_current_renderer->get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0);
 		}
@@ -347,16 +367,6 @@ namespace vk
 		}
 
 		return &g_upload_heap;
-	}
-
-	void acquire_global_submit_lock()
-	{
-		g_submit_mutex.lock();
-	}
-
-	void release_global_submit_lock()
-	{
-		g_submit_mutex.unlock();
 	}
 
 	void reset_compute_tasks()
@@ -435,6 +445,7 @@ namespace vk
 		g_drv_no_primitive_restart_flag = false;
 		g_drv_sanitize_fp_values = false;
 		g_drv_disable_fence_reset = false;
+		g_drv_emulate_cond_render = (g_cfg.video.relaxed_zcull_sync && !g_current_renderer->get_conditional_render_support());
 		g_num_processed_frames = 0;
 		g_num_total_frames = 0;
 		g_heap_compatible_buffer_types = 0;
@@ -541,6 +552,11 @@ namespace vk
 	bool fence_reset_disabled()
 	{
 		return g_drv_disable_fence_reset;
+	}
+
+	bool emulate_conditional_rendering()
+	{
+		return g_drv_emulate_cond_render;
 	}
 
 	void insert_buffer_memory_barrier(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize length, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage, VkAccessFlags src_mask, VkAccessFlags dst_mask)
@@ -836,31 +852,30 @@ namespace vk
 		return (g_num_processed_frames > 0)? g_num_processed_frames - 1: 0;
 	}
 
-	void reset_fence(VkFence *pFence)
+	void reset_fence(fence *pFence)
 	{
 		if (g_drv_disable_fence_reset)
 		{
-			vkDestroyFence(*g_current_renderer, *pFence, nullptr);
-
-			VkFenceCreateInfo info = {};
-			info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-			CHECK_RESULT(vkCreateFence(*g_current_renderer, &info, nullptr, pFence));
+			delete pFence;
+			pFence = new fence(*g_current_renderer);
 		}
 		else
 		{
-			CHECK_RESULT(vkResetFences(*g_current_renderer, 1, pFence));
+			pFence->reset();
 		}
 	}
 
-	VkResult wait_for_fence(VkFence fence, u64 timeout)
+	VkResult wait_for_fence(fence* pFence, u64 timeout)
 	{
+		pFence->wait_flush();
+
 		if (timeout)
 		{
-			return vkWaitForFences(*g_current_renderer, 1, &fence, VK_FALSE, timeout * 1000ull);
+			return vkWaitForFences(*g_current_renderer, 1, &pFence->handle, VK_FALSE, timeout * 1000ull);
 		}
 		else
 		{
-			while (auto status = vkGetFenceStatus(*g_current_renderer, fence))
+			while (auto status = vkGetFenceStatus(*g_current_renderer, pFence->handle))
 			{
 				switch (status)
 				{
